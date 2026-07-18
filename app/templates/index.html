@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Профиль клиента банка</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; display: flex; height: 100vh; margin: 0; background: #f9fafb; }
+        .sidebar { width: 280px; background: #fff; padding: 20px; border-right: 1px solid #e5e7eb; overflow-y: auto; }
+        .main { flex: 1; padding: 30px; overflow-y: auto; }
+        .history-item { padding: 12px; cursor: pointer; border-bottom: 1px solid #f3f4f6; border-radius: 6px; margin-bottom: 4px; }
+        .history-item:hover { background: #f3f4f6; }
+        .history-item.improved { border-left: 3px solid #10b981; }
+        .input-group { margin-bottom: 24px; display: flex; gap: 10px; }
+        input { padding: 12px; width: 250px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 16px; }
+        button { padding: 12px 24px; cursor: pointer; background: #2563eb; color: white; border: none; border-radius: 6px; font-size: 16px; font-weight: 500; }
+        button:hover { background: #1d4ed8; }
+        button.secondary { background: #6b7280; }
+        button.secondary:hover { background: #4b5563; }
+        button.judge-btn { background: #7c3aed; margin-top: 16px; width: 100%; }
+        button.judge-btn:hover { background: #6d28d9; }
+        .result { background: #fff; padding: 24px; border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .suggestion { color: #dc2626; font-weight: 600; background: #fef2f2; padding: 12px; border-radius: 6px; border: 1px solid #fecaca; }
+        .loading { color: #2563eb; font-weight: 500; }
+        .judge-box { background: #f5f3ff; border: 1px solid #ddd6fe; border-radius: 8px; padding: 20px; margin-top: 20px; }
+        .judge-scores { display: flex; gap: 20px; margin-bottom: 12px; font-weight: 600; color: #5b21b6; }
+        h3 { margin-top: 0; color: #111827; }
+        ul { padding-left: 20px; }
+        li { margin-bottom: 12px; }
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <h3>История запросов</h3>
+        <button class="secondary" onclick="clearHistory()" style="width: 100%; margin-bottom: 16px;">+ Новый запрос</button>
+        <div id="historyList"></div>
+    </div>
+    <div class="main">
+        <h2>Анализ клиента по ИНН</h2>
+        <div class="input-group">
+            <input type="text" id="innInput" placeholder="Введите ИНН (10 или 12 цифр)">
+            <button onclick="processINN()">Анализировать</button>
+        </div>
+        <div id="resultArea"></div>
+    </div>
+
+    <script>
+        let history = JSON.parse(localStorage.getItem('innHistory')) || [];
+        let currentInn = null;
+        let currentInitialResponse = null;
+
+        function renderHistory() {
+            const list = document.getElementById('historyList');
+            list.innerHTML = '';
+            history.forEach(item => {
+                const div = document.createElement('div');
+                div.className = 'history-item' + (item.is_improved ? ' improved' : '');
+                div.textContent = `${item.inn} ${item.corrected ? '(исправлен)' : ''} ${item.is_improved ? '✅' : ''}`;
+                div.onclick = () => loadResult(item);
+                list.appendChild(div);
+            });
+        }
+
+        function saveToHistory(inn, corrected, data, isImproved = false) {
+            history = history.filter(h => h.inn !== inn);
+            history.unshift({ inn, corrected, data, is_improved: isImproved, timestamp: new Date().toISOString() });
+            if (history.length > 20) history.pop();
+            localStorage.setItem('innHistory', JSON.stringify(history));
+            renderHistory();
+        }
+
+        function loadResult(item) {
+            currentInn = item.inn;
+            currentInitialResponse = item.data;
+            document.getElementById('innInput').value = item.inn;
+            
+            if (item.is_improved && item.data.judge_result) {
+                displayImprovedResult(item.data, item.data.judge_result);
+            } else {
+                displayResult(item.data, item.corrected);
+            }
+        }
+
+        function clearHistory() {
+            document.getElementById('innInput').value = '';
+            document.getElementById('resultArea').innerHTML = '';
+            currentInn = null;
+            currentInitialResponse = null;
+        }
+
+        async function processINN() {
+            const inn = document.getElementById('innInput').value.trim();
+            if (!/^\d{10,12}$/.test(inn)) return alert('Введите корректный ИНН (10 или 12 цифр)');
+            
+            const resultArea = document.getElementById('resultArea');
+            resultArea.innerHTML = '<p class="loading">⏳ Обработка запроса... Это может занять до 30 секунд.</p>';
+            currentInn = inn;
+
+            try {
+                const response = await fetch('/api/process_inn', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ inn })
+                });
+                const data = await response.json();
+                
+                if (data.error) {
+                    resultArea.innerHTML = `<p class="suggestion">Ошибка: ${data.error}</p>`;
+                } else {
+                    currentInitialResponse = data;
+                    saveToHistory(data.inn_used, data.corrected, data, false);
+                    displayResult(data, data.corrected);
+                }
+            } catch (e) {
+                resultArea.innerHTML = `<p class="suggestion">Ошибка сети: ${e}</p>`;
+            }
+        }
+
+        function displayResult(data, corrected) {
+            const resultArea = document.getElementById('resultArea');
+            let html = '';
+            if (corrected) {
+                html += `<p class="suggestion">⚠️ Компания по исходному ИНН не найдена. Использован скорректированный ИНН: <strong>${data.inn_used}</strong> (${data.company_name})</p>`;
+            }
+            if (data.profile) {
+                html += `<div class="result"><h3>🏢 Профиль компании</h3><p>${data.profile}</p></div>`;
+                html += `<div class="result"><h3>💳 Рекомендуемые продукты</h3><ul>`;
+                data.recommendations.forEach(rec => {
+                    html += `<li><strong>${rec.product}</strong>: ${rec.justification}</li>`;
+                });
+                html += `</ul></div>`;
+                
+                // Кнопка для вызова судьи
+                html += `<button class="judge-btn" onclick="evaluateResponse()">⚖️ Оценить и улучшить ответ</button>`;
+            } else {
+                html += `<p class="suggestion">Не удалось сформировать профиль.</p>`;
+            }
+            resultArea.innerHTML = html;
+        }
+
+        async function evaluateResponse() {
+            if (!currentInn || !currentInitialResponse) return;
+            
+            const resultArea = document.getElementById('resultArea');
+            // Сохраняем текущий HTML, чтобы добавить лоадер поверх или заменить кнопку
+            const btn = document.querySelector('.judge-btn');
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = '⏳ Оценка и улучшение (может занять до 40 сек)...';
+            }
+
+            try {
+                const response = await fetch('/api/evaluate_inn', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        inn: currentInn, 
+                        initial_response: currentInitialResponse 
+                    })
+                });
+                const judgeData = await response.json();
+                
+                if (judgeData.error) {
+                    alert('Ошибка оценки: ' + judgeData.error);
+                    if (btn) { btn.disabled = false; btn.textContent = '⚖️ Оценить и улучшить ответ'; }
+                } else {
+                    // Обновляем данные в истории
+                    currentInitialResponse.judge_result = judgeData;
+                    currentInitialResponse.is_improved = true;
+                    saveToHistory(currentInn, currentInitialResponse.corrected, currentInitialResponse, true);
+                    
+                    displayImprovedResult(currentInitialResponse, judgeData);
+                }
+            } catch (e) {
+                alert('Ошибка сети при оценке: ' + e);
+                if (btn) { btn.disabled = false; btn.textContent = '⚖️ Оценить и улучшить ответ'; }
+            }
+        }
+
+        function displayImprovedResult(data, judgeData) {
+            const resultArea = document.getElementById('resultArea');
+            let html = '';
+            if (data.corrected) {
+                html += `<p class="suggestion">⚠️ Использован скорректированный ИНН: <strong>${data.inn_used}</strong> (${data.company_name})</p>`;
+            }
+            
+            // Блок оценки судьи
+            html += `
+            <div class="judge-box">
+                <h3>⚖️ Оценка и улучшение (Claude Sonnet 5)</h3>
+                <div class="judge-scores">
+                    <span>Достоверность: ${judgeData.judge_reliability}/5</span>
+                    <span>Полнота: ${judgeData.judge_completeness}/5</span>
+                    <span>Релевантность: ${judgeData.judge_relevance}/5</span>
+                </div>
+                <p><em>💬 ${judgeData.judge_comment}</em></p>
+            </div>`;
+
+            // Улучшенные данные
+            html += `<div class="result" style="border-left: 4px solid #10b981;"><h3>🏢 Улучшенный профиль компании</h3><p>${judgeData.improved_profile || data.profile}</p></div>`;
+            html += `<div class="result" style="border-left: 4px solid #10b981;"><h3>💳 Улучшенные рекомендуемые продукты</h3><ul>`;
+            const recs = judgeData.improved_recommendations || data.recommendations;
+            recs.forEach(rec => {
+                html += `<li><strong>${rec.product}</strong>: ${rec.justification}</li>`;
+            });
+            html += `</ul></div>`;
+            
+            resultArea.innerHTML = html;
+        }
+
+        renderHistory();
+    </script>
+</body>
+</html>
